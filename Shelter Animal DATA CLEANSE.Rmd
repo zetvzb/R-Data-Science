@@ -1,0 +1,942 @@
+---
+title: "Kaggle Shelter Animal Outcomes Data Cleanse"
+author: "Zach Tallevast""
+date: "5/9/2018"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Competition Description 
+Every year, approximately 7.6 million companion animals end up in US shelters. Many animals are given up as unwanted by their owners, while others are picked up after getting lost or taken out of cruelty situations. Many of these animals find forever families to take them home, but just as many are not so lucky. 2.7 million dogs and cats are euthanized in the US every year. 
+Using a dataset provided by the Austin Animal Shelter and ASPCA, intake information including breed, color, sex, and age are provided and we are tasked to predict the outcome for each animal. 
+#Goal 
+This dataset can help understand trends in animal shelter outcomes. These insights could help animal shelters focus their energy on specific animals who need a litte extra help finding a new home. 
+#Loading the Dataset (Shelter Animal Outcomes)
+```{r begin}
+setwd("/Users/zachtallevast/Box Sync/Kaggle Shelter Animal Outcomes/")
+full <- read.csv("Shelter Outcomes TRAIN.csv", header=T)
+#See First 3 Lines
+head(full, n=3L)
+#Show Columns Information
+str(full)
+```
+#Loading Packages 
+```{}
+#Libraries Used in Analysis
+library(plyr)
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(lubridate)
+library(rpart)
+library(randomForest)
+library(Hmisc)
+```
+#Data Analysis 
+```{r Analysis, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+summary(full$AnimalType)
+#There are 11,134 Cats and 15,595 Dogs in this dataset. 
+
+#Create a Plot which shows the animal type, outcome type, and number in each category. 
+outcomes <- full[1:26728, ] %>% group_by(AnimalType, OutcomeType) %>%
+  summarise(num_animals = n())
+ggplot(outcomes, aes(x=AnimalType, y=num_animals, fill=OutcomeType))+
+  geom_bar(stat='identity', position = 'fill', color='black')+
+  coord_flip()+
+  labs(y='Proportion of Animals', x='Animal', title = 'Outcomes: Cats & Dogs')+
+  theme_few()
+
+#Notice that cats are twice as likely to be transferred to a new owner and dogs are four times as likely to be returned to their owner than cats. 
+```
+#Creation of Features: Fixed and Sex
+Create feature called "Fixed" that distinguishes if the animal is intact or unknown. Intact means that the animal has not been fixed.  
+Create a feature called "Sex" to provide solely the sex of the animal. 
+```{r Sex}
+summary(full$SexuponOutcome)
+full$SexuponOutcome = as.character(full$SexuponOutcome)
+full$SexuponOutcome <- ifelse(nchar(full$SexuponOutcome)==0, 'Unknown', full$SexuponOutcome)
+full$SexuponOutcome = as.factor(full$SexuponOutcome)
+full$Fixed <- ifelse(grepl('Intact', full$SexuponOutcome), 1, ifelse(grepl('Unknown', full$SexuponOutcome), 'Unknown', 0))
+full$Sex <- ifelse(grepl('Male', full$SexuponOutcome), 'Male', ifelse(grepl('Unknown', full$Sex), 'Unknown', 'Female'))
+#Make as.factors 
+full$Fixed = as.factor(full$Fixed)
+full$Sex = as.factor(full$Sex)
+#Make A Plot of cats and dogs which shows how animal outcomes change when animal is fixed. 
+cats = full[full$AnimalType == "Cat",]
+dogs = full[full$AnimalType == "Dog",]
+
+ggplot(cats, aes(x=Fixed, fill = OutcomeType))+
+  geom_bar(stat="count", position = "fill", width = 0.7)+
+  coord_flip()+
+  ggtitle("Cats by Fixed")
+
+ggplot(dogs, aes(x=Fixed, fill = OutcomeType))+
+  geom_bar(stat="count", position = "fill", width = 0.7)+
+  coord_flip()+
+  ggtitle("Dogs by Fixed")
+```
+Notice that once dogs are fixed, they are more adoptable. 
+#Creation of Features: Breed (SimpleBreed)
+There are 1380 breeds in our dataset. For Prediction, we need to group the breeds into buckets. The way we did this was we cut the second breed in the mix out of the breed name, and took out the word mix. 
+```{r breed}
+nlevels(factor(full$Breed))
+#First lets take out Mix Breeds and denote them as a feature called Mix. 
+full$Mix <-ifelse(grepl('Mix', full$Breed),1,0)
+full$Mix = as.factor(full$Mix)
+#Simply Number of Breeds. Split on "/" and Remove "Mix"
+full$Breed = as.character(full$Breed)
+full$SimpleBreed <-sapply(full$Breed, function(x) gsub(' Mix', '', strsplit(x, split = '/')[[1]][1]))
+full$SimpleBreed = as.factor(full$SimpleBreed)
+nlevels(factor(full$SimpleBreed))
+```
+Now we have 220 breeds. Lets Plot Breeds by Outcome for Cats and For Dogs
+```{r Breed}
+
+dogs = full[full$AnimalType == "Dog",]
+
+ dogs %>% count(SimpleBreed) %>% arrange(desc(n)) %>% filter(n>50) -> dog_colors
+ dogs$SimpleBreed = as.character(dogs$SimpleBreed)
+ dogs$SimpleBreed[!(dogs$SimpleBreed %in% dog_colors$SimpleBreed)] <-"Other"
+  ggplot(dogs, aes(x=SimpleBreed, fill=OutcomeType))+
+  geom_bar(stat="count", position = "fill", width = 0.6)+
+  ggtitle("Dog Breeds by Outcome n>50")+
+  coord_flip()+
+  scale_fill_brewer(palette = "Set1")+
+  theme(axis.title = element_blank())
+
+filter(full, AnimalType == "Cat" ) %>% 
+  ggplot(aes(x=SimpleBreed, fill=OutcomeType))+
+  geom_bar(stat="count", position = "fill", width = 0.6)+
+  ggtitle("Cat Breeds by Outcome")+
+  coord_flip()+
+  scale_fill_brewer(palette = "Set1")+
+  theme(axis.title = element_blank())
+```
+
+#Creation of Features: (Missing Values)
+Now lets deal with missing values for Name. If the animal has no name, call them "Nameless". Create a feature that indicates if the animal has a name or not. 
+```{r missing}
+full$Name = as.character(full$Name)
+full$Name <-ifelse(nchar(full$Name)==0, "Nameless", full$Name)
+
+full$HasAName[full$Name == 'Nameless'] <- 0 
+full$HasAName[full$Name != 'Nameless'] <-1
+full$HasAName = as.factor(full$HasAName)
+```
+#Creation of Features: (Age)
+Display age in Days across all animals. To do this, create a mulitiplier that corresponds to "Month", "Days", "Years", "Weeks", etc. 
+```{r age}
+#Create a Time Value i.e. 1 or 12 or etc. 
+#Create a Unit of Time i.e. "Year","Month", etc. 
+full$AgeuponOutcome = as.character(full$AgeuponOutcome)
+full$TimeValue <-sapply(full$AgeuponOutcome, function(x) strsplit(x, split = ' ')[[1]][1])
+full$UnitofTime <- sapply(full$AgeuponOutcome, function(x) strsplit(x, split = ' ')[[1]][2])
+#Rid the plurals on the Units of Time 
+full$UnitofTime <- gsub('s', '', full$UnitofTime)
+full$TimeValue <- as.numeric(full$TimeValue)
+#Standardize across ages for AgeinDays
+Multiplier <- ifelse(full$UnitofTime == "day", 1, 
+                     ifelse(full$UnitofTime == "week", 7,
+                            ifelse(full$UnitofTime == "month", 30, 
+                                   ifelse(full$UnitofTime == "year", 365, NA))))
+full$AgeinDays <- full$TimeValue * Multiplier
+summary(full$AgeinDays)
+full$AgeinDays = as.factor(full$AgeinDays)
+#sum(is.na(full$AgeinDays))
+library(rpart)
+#Now there are 18 missing ages
+full$AgeinDays = as.factor(full$AgeinDays)
+full$AgeinDays = as.numeric(as.character(full$AgeinDays))
+#sum(is.na(full$AgeinDays))
+age_fit = rpart(AgeinDays ~ AnimalType + Sex+ Fixed + SimpleBreed+ HasAName, 
+              data = full[!is.na(full$AgeinDays), ],
+               method = 'anova')
+#Put the predicted values into the missing values 
+full$AgeinDays[is.na(full$AgeinDays)] = predict(age_fit, full[is.na(full$AgeinDays),])
+#sum(is.na(full$AgeinDays))
+#table(full$AgeinDays)
+full$AgeinDays = as.factor(full$AgeinDays)
+```
+Now lets plot the Ages by outcome type 
+```{r ages}
+cats = full[full$AnimalType == "Cat",]
+dogs = full[full$AnimalType == "Dog",]
+
+#Cats Plot 
+ggplot(cats, aes(x=AgeinDays, fill=OutcomeType))+
+           geom_bar(stat = "count", position = "fill", alpha = 0.9)+
+           scale_fill_brewer(palette = "Set1")+
+           ggtitle("Relative Frequency of outcomes by Age in Days-CAT")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size=11, color = "green"), 
+        legend.position = "bottom", 
+        axis.title.y = element_text(angle = 90, color = "blue"))
+#Dogs Plot
+ggplot(dogs, aes(x=AgeinDays, fill=OutcomeType))+
+  geom_bar(stat = "count", position = "fill", alpha = 0.9)+
+  
+  scale_fill_brewer(palette = "Set1")+
+  ggtitle("Relative Frequency of outcomes by Age in Days-DOG")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size=11, color = "green"), 
+        legend.position = "bottom", 
+        axis.title.y = element_text(angle = 90, color = "blue"))
+#head(full, n=5)
+```
+#Creation of Features:(Hypo-Allergenic)
+```{r hypo}
+Cats =full[full$AnimalType == "Cat",]
+Dogs = full[full$AnimalType == "Dog",]
+Dogs$Hypo = Dogs$Breed
+Dogs = mutate(Dogs, Hypo = ifelse(Dogs$Hypo == 'Labrador' | Dogs$Hypo == 'Golden Retriever' | Dogs$Hypo == 'Siberian Husky', 0, Dogs$Hypo))
+
+Dogs$Hypo = ifelse(grepl('Poodle', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Yorkshire', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Havanese', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Maltese', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Shih Tzu', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Schnauzer', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Basenji', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Silky Terrier', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Irish Water Spaniel', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Terrier', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Terr', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Afghan Hound', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Water Spaniel', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Spanish Water', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Water Dog', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Bichon Frise', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl(1, Dogs$Hypo), 1, 0)
+
+Cats$Hypo = Cats$Breed
+Cats$Hypo = ifelse(grepl('Siberian', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Balinese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Bengal', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Burmese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Siberian', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Cornish Rex', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Devon Rex', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Javanese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Ocicat', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Russian Blue', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Siamese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Sphynx', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl(1, Cats$Hypo), 1, 0)
+full = bind_rows(Cats, Dogs)
+```
+#Creation of Features: (Time and Date Variables)
+```{r Date, message=FALSE}
+full$DateTime = as.character(full$DateTime)
+full$Date <- sapply(full$DateTime, function(x) strsplit(x,split = ' ') [[1]][1])
+full$Time <-sapply(full$DateTime, function(x) strsplit(x, split = ' ') [[1]][2])
+full$Date <-as.Date(full$Date, "%m/%d/%y")
+full$DateTime <-paste(full$Date, " ", full$Time)
+full$DateTime = as.character(full$DateTime)
+library(lubridate)
+full$Hour <- sapply(full$Time, function(x) strsplit(x, split = ':')[[1]][1])
+full$Hour = as.factor(full$Hour)
+#Establish a Time Of Day Covariate 
+full$Hour = as.numeric(full$Hour)
+full$TimeOfDay <- ifelse(full$Hour > 5 & full$Hour < 11, 'Morning',
+                         ifelse(full$Hour > 10 & full$Hour <16, 'Midday',
+                                ifelse(full$Hour >15 & full$Hour <20, 'LateDay',
+                                       'After Work Hours')))
+full$TimeOfDay <- factor(full$TimeOfDay, levels = c('Morning', 'Midday', 'LateDay', 'After Work Hours'))
+full$TimeOfDay = as.factor(full$TimeOfDay)
+#Plot Time of Day by Outcomes 
+daytimes <- full[1:26729, ] %>% group_by(AnimalType, TimeOfDay, OutcomeType) %>%
+  summarise(num_animals = n())
+ggplot(daytimes, aes(x=TimeOfDay, y=num_animals, fill=OutcomeType, na.rm = TRUE))+
+  geom_bar(stat = 'identity', position = 'fill', color = 'black')+
+  facet_wrap(~AnimalType)+
+  coord_flip()+
+  labs(y = 'Proportion of Animals', x = 'Animal', title = 'Outcomes by Time of Day')+
+  theme_few()
+#head(full, n=5)
+```
+#Creation of Features: (Color)
+There are 366 Colors in the color space. We will subset this to be 7 colors. Does color play a role in the outcome of an animal? 
+```{r Color}
+#Is the animal Multicolored? 
+full$Multicolor = full$Color
+full$Multicolor = ifelse(grepl('/', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Tricolor', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Calico', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Tabby', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Point', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Brindle', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Tiger', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Merle', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Tick', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Tortie', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Torbie', full$Multicolor), 'Yes', full$Multicolor)
+full$Multicolor = ifelse(grepl('Yes', full$Multicolor), 'Yes', 'No')
+full$Multicolor = ifelse(grepl('Yes', full$Multicolor), 1, 0)
+
+full$Color = as.character(full$Color)
+full$Color <- sapply(full$Color, 
+                           function(x) strsplit(x, split = '/')[[1]][1])
+full$Color = ifelse(grepl('Blue Tick', full$Color), 'Brown', full$Color)
+full$Color <- sapply(full$Color, 
+                         function(x) strsplit(x, split = ' ')[[1]][1])
+full$Color = ifelse(grepl('Apricot', full$Color), 'Orange', full$Color)
+full$Color = ifelse(grepl('Agouti', full$Color), 'Gray', full$Color)
+full$Color = ifelse(grepl('Chocolate', full$Color), 'Brown', full$Color)
+full$Color = ifelse(grepl('Ruddy', full$Color), 'Brown', full$Color)
+full$Color = ifelse(grepl('Calico', full$Color), 'Tricolor', full$Color)
+full$Color = ifelse(grepl('Flame', full$Color), 'White', full$Color)
+full$Color = ifelse(grepl('Gold', full$Color), 'Yellow', full$Color)
+full$Color = ifelse(grepl('Lilac', full$Color), 'Gray', full$Color)
+full$Color = ifelse(grepl('Red', full$Color), 'Brown', full$Color)
+full$Color = ifelse(grepl('Pink', full$Color), 'Tan', full$Color)
+full$Color = ifelse(grepl('Seal', full$Color), 'Brown', full$Color)
+full$Color = ifelse(grepl('Blue', full$Color), 'Gray', full$Color)
+full$Color = ifelse(grepl('Lynx', full$Color), 'Gray', full$Color)
+full$Color = ifelse(grepl('Fawn', full$Color), 'Yellow', full$Color)
+full$Color = ifelse(grepl('Buff', full$Color), 'Orange', full$Color)
+full$Color = ifelse(grepl('Sable', full$Color), 'Brown', full$Color)
+full$Color = ifelse(grepl('Liver', full$Color), 'Gray', full$Color)
+full$Color = ifelse(grepl('Silver', full$Color), 'Gray', full$Color)
+full$Color = ifelse(grepl('Torbie', full$Color), 'Tricolor', full$Color)
+full$Color = ifelse(grepl('Tortie', full$Color), 'Tricolor', full$Color)
+full$Color = ifelse(grepl('Yellow', full$Color), 'Tan', full$Color)
+full = mutate(full, Color = ifelse(full$Color == 'Cream' & full$AnimalType == 'Cat', 'Orange', full$Color))
+full = mutate(full, Color = ifelse(full$Color == 'Cream' & full$AnimalType == 'Dog', 'Tan', full$Color))
+table(full$Color)
+
+#Plot Color by Outcome Type 
+cats =full[full$AnimalType == "Cat",]
+dogs = full[full$AnimalType == "Dog",]
+dogs %>% count(Color) %>% arrange(desc(n)) %>%
+  filter(n >400) -> dog_colors
+dogs$Color = as.character(dogs$Color)
+dogs$Color[!(dogs$Color %in% dog_colors$Color)] <- "Other"
+ggplot(dogs, aes(x=Color, fill=OutcomeType))+
+  geom_bar(stat = "count", position = "fill", width = 0.5)+
+  coord_flip()+
+  ggtitle ("Dog Colors by Outcome Type")+
+  scale_fill_brewer(palette = "Set1")
+
+cats %>% count(Color) %>% arrange(desc(n)) %>%
+  filter(n >400) -> cat_colors
+cats$Color = as.character(cats$Color)
+cats$Color[!(cats$Color %in% cat_colors$Color)] <- "Other"
+ggplot(cats, aes(x=Color, fill=OutcomeType))+
+  geom_bar(stat = "count", position = "fill", width = 0.5)+
+  coord_flip()+
+  ggtitle ("Cat Colors by Outcome Type")+
+  scale_fill_brewer(palette = "Set1")
+
+```
+#Creation of Features: (Age Binning)
+Create a feature that distinguishes between Senior, Adult, and Puppy/Kitten aged animals. In our analysis, a Puppy/Kitten is Under 1 years old, and a Senior animal is 7 or older. 
+```{r AgeBin}
+full$AgeinDays = as.numeric(as.character(full$AgeinDays))
+full$AgeBin[full$AgeinDays <= 365] <- "Baby"
+full$AgeBin[full$AgeinDays < 2555 & full$AgeinDays >= 365] <- "Adult"
+full$AgeBin[full$AgeinDays >=2555] <- "Senior"
+full$AgeBin = as.factor(full$AgeBin)
+
+#Make A Plot that Shows Age Binning versus Outcome Type 
+ggplot(data=subset(full, !is.na(full$AgeBin)), aes(x=AgeBin, fill = OutcomeType))+
+  geom_bar(stat = "count", position = "fill", width = 0.8)+
+  coord_flip()+
+  ggtitle("Outcomes by Age Binning")+
+  scale_fill_brewer(palette = "Set1")
+```
+#Creation of Features: (Holiday Adoption Season)
+According to the ASPCA, more animals are adopted in the adoption season between October 1st through December 31. October is National Adopt a Dog Month
+```{r Holiday}
+full$Month <- sapply(full$DateTime, function(x) strsplit(x,split = '-') [[1]][2])
+full$Month <-sapply(full$Month, function(x) strsplit(x,split = ' ') [[1]][1])
+full$HolidaySeason <- ifelse(full$Month <10, 'Non-Holiday', 'Holiday')
+full$Month = as.factor(full$Month)
+full$HolidaySeason = as.factor(full$HolidaySeason)
+#head(full, n=5)
+```
+#Creation of Features: (Top Ten Adopted Breeds)
+According to data provided by the ASPCA, we established an indicator variable to distinguish if the breed is a top ten adopted breed for dogs and top five for cats. 
+```{r TopTen}
+full$TopAdopted <-ifelse(full$SimpleBreed == 'Bull Dog', 'Top 10', 
+ifelse(full$SimpleBreed == 'Beagle', 'Top 10',ifelse(full$SimpleBreed == 'Bull Terrier', 'Top 10',
+  ifelse(full$SimpleBreed == 'Collie', 'Top 10',ifelse(full$SimpleBreed == 'Newfoundland', 'Top 10',
+  ifelse(full$SimpleBreed == 'Vizsla', 'Top 10',ifelse(full$SimpleBreed == 'Irish Setter', 'Top 10',
+  ifelse(grepl( 'Poodle',full$SimpleBreed), 'Top 10',ifelse(full$SimpleBreed == 'Labrador Retriever', 'Top 10',
+  ifelse(full$SimpleBreed == 'Golden Retreiver', 'Top 10', ifelse(full$SimpleBreed == 'Persian', 'Top 5', 
+  ifelse(full$SimpleBreed == 'American Shorthair', 'Top 5', ifelse(full$SimpleBreed == 'Maine Coon', 'Top 5', 
+  ifelse(full$SimpleBreed == 'Siamese', 'Top 5', ifelse(full$SimpleBreed == 'Abyssinian', 'Top 5', 'Not Top 10')))))))))))))))
+full$TopAdopted <- as.factor(full$TopAdopted)
+```
+#Creation of Features: (Top Ten Shelter Animal Breeds)
+Although we have established a feature that teases out the top 10 adoptable breeds, in animal shelters the breeds may not fit this list. i.e. certain breeds may be more common in animal shelters than others. According to the ASPCA, we teases out the top 10 dog breeds in shelters and the top 5 cat breeds in shelters. 
+```{r TopTenShelter}
+full$TopTenSheltered <-ifelse(full$SimpleBreed == 'Bulldog', 'Top 10', 
+ifelse(full$SimpleBreed == 'Beagle', 'Top 10',ifelse(full$SimpleBreed == 'Boxer', 'Top 10',
+  ifelse(full$SimpleBreed == 'Chihuahua Shorthair', 'Top 10',ifelse(full$SimpleBreed == 'Dachshund', 'Top 10',
+  ifelse(full$SimpleBreed == 'German Shepherd', 'Top 10',ifelse(full$SimpleBreed == 'Labrador Retreiver', 'Top 10',
+  ifelse(full$SimpleBreed == 'Pit Bull', 'Top 10',ifelse(full$SimpleBreed == 'Bull Terrier', 'Top 10',
+  ifelse(full$SimpleBreed == 'Rottweiler', 'Top 10', ifelse(full$SimpleBreed =='Siamese', 'Top 5', 
+  ifelse(full$SimpleBreed == 'Persian', 'Top 5',ifelse(full$SimpleBreed == 'Maine Coon', 'Top 5', 
+  ifelse(full$SimpleBreed == 'Ragdoll', 'Top 5', ifelse(full$SimpleBreed == 'Abyssinian', 'Top 5','Not Top')))))))))))))))
+full$TopTenSheltered <- as.factor(full$TopTenSheltered)
+```
+#Creation of Features: (Average Lifespan by Breed)
+```{r lifespan}
+setwd("/Users/zachtallevast/Box Sync/Kaggle Shelter Animal Outcomes/")
+Lifespan <-read.csv("Breed Lifespans.csv", header=T)
+Lifespan = unique(Lifespan)
+Lifespan$AVERAGE.LIFESPAN..YEARS. = ifelse(Lifespan$Breed == 'Yorkshire Terrier', 13, Lifespan$AVERAGE.LIFESPAN..YEARS.)
+Lifespan$AVERAGE.LIFESPAN..YEARS. = ifelse(Lifespan$Breed == 'Tonkinese', 15, Lifespan$AVERAGE.LIFESPAN..YEARS.)
+Lifespan = unique(Lifespan)
+Lifespan = Lifespan[-c(72),]
+full <-merge(x=full, y=Lifespan, by.x = "SimpleBreed", by.y = "Breed", all.x=TRUE, incomparables =='Unknown')
+full$AVERAGE.LIFESPAN..YEARS.[is.na(full$AVERAGE.LIFESPAN..YEARS.)] <- 10
+full$AVERAGE.LIFESPAN..YEARS. <- as.factor(full$AVERAGE.LIFESPAN..YEARS.)
+#sum(is.na(full$AVERAGE.LIFESPAN..YEARS.))
+```
+#Creation of Features: (Hunting)
+```{r Hunt}
+setwd("/Users/zachtallevast/Box Sync/Kaggle Shelter Animal Outcomes/")
+Hunting <- read.csv("Hunting Dog.csv", header=T)
+Hunting = unique(Hunting)
+full <- merge(x=full, y = Hunting, by.x = "SimpleBreed", by.y ="Breed", all.x=TRUE, incomparables = 'Unknown')
+#head(full, n=5)
+```
+#Creation of Features:(Hypo-Allergenic)
+```{r Hypo}
+Cats =full[full$AnimalType == "Cat",]
+Dogs = full[full$AnimalType == "Dog",]
+Dogs$Hypo = Dogs$Breed
+Dogs = mutate(Dogs, Hypo = ifelse(Dogs$Hypo == 'Labrador' | Dogs$Hypo == 'Golden Retriever' | Dogs$Hypo == 'Siberian Husky', 0, Dogs$Hypo))
+Dogs$Hypo = ifelse(grepl('Poodle', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Yorkshire', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Havanese', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Maltese', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Shih Tzu', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Schnauzer', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Basenji', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Silky Terrier', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Irish Water Spaniel', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Terrier', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Terr', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Afghan Hound', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Water Spaniel', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Spanish Water', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Water Dog', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl('Bichon Frise', Dogs$Hypo), 1, Dogs$Hypo)
+Dogs$Hypo = ifelse(grepl(1, Dogs$Hypo), 1, 0)
+
+Cats$Hypo = Cats$Breed
+Cats$Hypo = ifelse(grepl('Siberian', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Balinese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Bengal', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Burmese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Siberian', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Cornish Rex', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Devon Rex', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Javanese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Ocicat', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Russian Blue', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Siamese', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl('Sphynx', Cats$Hypo), 1, Cats$Hypo)
+Cats$Hypo = ifelse(grepl(1, Cats$Hypo), 1, 0)
+full = bind_rows(Cats, Dogs)
+```
+#Creation of Features: (Animal Size)
+According to the ASPCA, we created a Size variable according to the typical breed's size. Our sizes are: 
+1. Small <= 25 lbs
+2. Medium 25 lbs < x < 50 lbs
+3. Large 50 lbs < x < 100 lbs 
+4. XL >= 100 lbs
+```{r Size, echo=FALSE}
+Cats =full[full$AnimalType == "Cat",]
+Dogs = full[full$AnimalType == "Dog",]
+Dogs$Size = Dogs$Breed
+Dogs$Size = as.character(Dogs$Size)
+Dogs$Size = sapply(Dogs$Size, 
+                   function(x) gsub(' Mix', ' ',
+                                    strsplit(x, split = ' Mix')[[1]][1]))
+Dogs$Size = ifelse(grepl('Miniature', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Mini', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Toy', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Chihuahua', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Dachshund', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Maltese', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pomeranian', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Shih Tzu', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Yorkshire Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Havanese', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Coonhound', Dogs$Size), 'Large', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Pug' | Dogs$Size == 'Boston Terrier', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Dandie Dinmont' | Dogs$Size == 'Coton De Tulear' | Dogs$Size == 'Cavalier Span' | Dogs$Size == 'Chinese Crested', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Bruss Griffon' | Dogs$Size == 'Bedlington Terr' | Dogs$Size == 'Bichon Frise' | Dogs$Size == 'Affenpinscher', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Japanese Chin' | Dogs$Size == 'Finnish Spitz' | Dogs$Size == 'Feist' | Dogs$Size == 'Manchester Terrier', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Schipperke' | Dogs$Size == 'Podengo Pequeno' | Dogs$Size == 'Patterdale Terr' | Dogs$Size == 'Manchester Terrier', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Bichons Frise' | Dogs$Size == 'West Highland Terrier' | Dogs$Size == 'Papillon' | Dogs$Size == 'Silky Terrier', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Jack Russell Terrier' | Dogs$Size == 'Cavalier King Charles Spaniel' | Dogs$Size == 'Beagle' | Dogs$Size == 'Shetland Sheepdog', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Welsh Terrier' | Dogs$Size == 'Swedish Vallhund' | Dogs$Size == 'Sealyham Terr' | Dogs$Size == 'Scottish Terrier', 'Small', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Border Collie' | Dogs$Size == 'Brittany' | Dogs$Size == 'Golden Rretriever' | Dogs$Size == 'English Shepherd', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'American Water Spaniel' | Dogs$Size == 'Australian Cattle Dog' | Dogs$Size == 'Australian Shepherd' | Dogs$Size == 'Basenji', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Barbet' | Dogs$Size == 'Basset Hound' | Dogs$Size == 'Cardigan Welsh Corgi' | Dogs$Size == 'Dalmatian', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Chinese Sharpei' | Dogs$Size == 'Boykin Span' | Dogs$Size == 'Carolina Dog' | Dogs$Size == 'Blue Lacy', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Welsh Springer Spaniel' | Dogs$Size == 'Treeing Tennesse Brindle' | Dogs$Size == 'Treeing Cur' | Dogs$Size == 'Skye Terrier', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Bulldog' | Dogs$Size == 'Cocker Spaniel' | Dogs$Size == 'Standard Schnauzer' | Dogs$Size == 'Samoyed', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Jindo' | Dogs$Size == 'German Pinscher' | Dogs$Size == 'Field Spaniel' | Dogs$Size == 'English Springer Spaniel', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Port Water Dog' | Dogs$Size == 'Pbgv' | Dogs$Size == 'Mexican Hairless' | Dogs$Size == 'Keeshond', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Afghan Hound' | Dogs$Size == 'Airedale Terrier' | Dogs$Size == 'Akita' | Dogs$Size == 'American Foxhound', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Bloodhound' | Dogs$Size == 'Belgian Sheepdog' | Dogs$Size == 'Boxer' | Dogs$Size == 'Bull Terrier', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Chow Chow' | Dogs$Size == 'Golden Retriever' | Dogs$Size == 'English Setter' | Dogs$Size == 'German Shepherd', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Labrador Retriever' | Dogs$Size == 'Rottweiler' | Dogs$Size == 'Siberian Husky' | Dogs$Size == 'Standard Poodle', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Bernese Mountain Dog' | Dogs$Size == 'Greyhound' | Dogs$Size == 'Foxhound' | Dogs$Size == 'Belgian Tervuren', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Spinone Italiano' | Dogs$Size == 'Schnauzer Giant' | Dogs$Size == 'Plott Hound' | Dogs$Size == 'Picardy Sheepdog', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Hovawart' | Dogs$Size == 'Ibizan Hound' | Dogs$Size == 'Harrier' | Dogs$Size == 'Gordon Setter', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Dutch Shepherd/Anatol Shepherd' | Dogs$Size == 'Dogue De Bordeaux/American Bulldog' | Dogs$Size == 'Doberman Pinsch' | Dogs$Size == 'Dutch Shepherd/Boxer', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Black/Tan Hound' | Dogs$Size == 'Belgian Malinois' | Dogs$Size == 'Beauceron' | Dogs$Size == 'American Bulldog', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Chesa Bay Retr' | Dogs$Size == 'Bluetick Hound' | Dogs$Size == 'Dogo Argentino/Chinese Sharpei' | Dogs$Size == 'Dalmatian/Basset Hound', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Entlebucher' | Dogs$Size == 'English Foxhound' | Dogs$Size == 'Dutch Shepherd' | Dogs$Size == 'Dogo Argentino', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Saluki' | Dogs$Size == 'Saluki/Doberman Pinsch' | Dogs$Size == 'Otterhound' | Dogs$Size == 'Nova Scotia Duck Tolling Retriever', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Wirehaired Pointing Griffon', 'Large', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Black' | Dogs$Size == 'Great Dane' | Dogs$Size == 'Great Pyrenees' | Dogs$Size == 'Irish Wolfhound', 'XL', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Saint Bernard' | Dogs$Size == 'Mastiff' | Dogs$Size == 'Newfoundland' | Dogs$Size == 'Leonberger', 'XL', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Presa Canario' | Dogs$Size == 'Landseer', 'XL', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Dogue De Bordeaux' | Dogs$Size == 'Cane Corso' | Dogs$Size == 'Anatol Shepherd', 'XL', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Greater Swiss Mountain Dog' | Dogs$Size == 'Bullmastiff' | Dogs$Size == 'Boerboel' | Dogs$Size == 'Kuvasz', 'XL', Dogs$Size))
+# Mixes -- Run in this order
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'German Shepherd/Cardigan Welsh Corgi', 'Medium', Dogs$Size))
+Dogs$Size = ifelse(grepl('German Shepherd', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('French Bulldog', Dogs$Size), 'Small', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Flat Coat Retriever/Papillon', 'Small', Dogs$Size))
+Dogs$Size = ifelse(grepl('Flat Coat Retriever', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('St. Bernard Rough Coat/Border Collie', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('St. Bernard', Dogs$Size), 'XL', Dogs$Size)
+Dogs$Size = ifelse(grepl('Staffordshire', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Whippet/Labrador Retriever', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Whippet', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Siberian Husky/Great Pyranees', Dogs$Size), 'Large', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Siberian Husky/Labrador Retriever'| Dogs$Size == 'Siberian Husky/Catahoula'| Dogs$Size == 'Siberian Husky/Rottweiler' | Dogs$Size == 'Siberian Husky/Alaskan Malamute', 'Large', Dogs$Size ))
+Dogs$Size = ifelse(grepl('Siberian Husky/Anatol Shepherd', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Siberian Husky', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Fox Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Mastiff', Dogs$Size), 'XL', Dogs$Size)
+Dogs$Size = ifelse(grepl('West Highland', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Vizsla/Beagle', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Vizsla', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Shiba Inu', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Wheaten Terrier', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Weimaraner', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Shetland Sheepdog/Keeshold', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Shetland Sheepdog', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Rottweiler', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Rhod Ridgeback', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Redbone Hound', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Rat Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Queensland Heeler/Great Dane', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Queensland Heeler', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Tibetan', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Jack Russell Terrier/Labrador Retriever', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Jack Russell Terrier/Pointer', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Jack Russell Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Labrador Retriever/Beagle' | Dogs$Size == 'Labrador Retriever/Blue Lacy' | Dogs$Size == 'Labrador Retriever/Black Mouth Cur' | Dogs$Size == 'Labrador Retriever/Boston Terrier' | Dogs$Size == 'Labrador Retriever/Border Terrier', 'Medium', Dogs$Size))
+Dogs$Size = ifelse(grepl('Labrador Retriever', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Great Pyranees/Border Collie', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Great', Dogs$Size), 'XL', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pug/Pit Bull', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pit Bull/Pug', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pug', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pointer', Dogs$Size), 'Medium', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Pit Bull/Border Collie' | Dogs$Size == 'Pit Bull/Blue Lacy' | Dogs$Size == 'Pit Bull/Black Mouth Cur' | Dogs$Size == 'Pit Bull/Boston Terrier' | Dogs$Size == 'Pit Bull/Border Terrier', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Pit Bull/Beagle' | Dogs$Size == 'Pit Bull/Carolina Dog' | Dogs$Size == 'Pit Bull/Cardigan Welsh Corgi' | Dogs$Size == 'Pit Bull/English Bulldog' | Dogs$Size == 'Pit Bull/American Bull Dog', 'Medium', Dogs$Size))
+Dogs$Size = ifelse(grepl('Pit Bull', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pembroke Welsh Corgi/Brittany', Dogs$Size), 'Small', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Pembroke Welsh Corgi', 'Small', Dogs$Size))
+Dogs$Size = ifelse(grepl('Pembroke Welsh Corgi', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Standard Schnauzer', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Plott Hound', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pharaoh Hound', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Scottish Terrier/Basset Hound', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Scottish Terrier/Cairn Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Australian', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Alaskan', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Papillon', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Russell Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Pekingese', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Norwich Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Old English', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Norfolk Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Golden Retriever/Chow Chow' | Dogs$Size == 'Golden Retriever/Standard Poodle' | Dogs$Size == 'Akita', 'Large', Dogs$Size))
+Dogs$Size = ifelse(grepl('Golden Retriever', Dogs$Size), 'Medium', Dogs$Size)
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Catahoula/Cardigan Welsh Corgi' | Dogs$Size == 'Catahoula/Border Collie' | Dogs$Size == 'Catahoula/American Bulldog', 'Medium', Dogs$Size))
+Dogs = mutate(Dogs, Size = ifelse(Dogs$Size == 'Catahoula/Beagle' | Dogs$Size == 'Catahoula/Black Mouth Cur', 'Medium', Dogs$Size))
+Dogs$Size = ifelse(grepl('Catahoula', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Lhasa Apso', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Lowchen', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Nova Scotia Duck Tolling Retriever/Border Collie', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Norwegian Elkhound', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Newfoundland/Border Collie', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Manchester Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Italian Greyhound', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Irish Wolfhound', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Irish Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Greyhound', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Glen Of Imaal', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('English Bulldog/Boxer', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('English Bulldog', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Collie Smooth/Beagle', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Collie', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('English Springer Spaniel', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Cocker Spaniel', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Boxer', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Cairn Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Border Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('American Bulldog', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Corgi', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Chow Chow', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Boston Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Beagle/Cavalier Span', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Beagle', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Black Mouth Cur', Dogs$Size), 'Large', Dogs$Size)
+Dogs$Size = ifelse(grepl('Border Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Chinese Sharpei', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('Canaan Dog', Dogs$Size), 'Medium', Dogs$Size)
+Dogs$Size = ifelse(grepl('American Eskimo', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Border Terrier', Dogs$Size), 'Small', Dogs$Size)
+Dogs$Size = ifelse(grepl('Basset Hound', Dogs$Size), 'Large', Dogs$Size)
+table(Dogs$Size)
+
+Cats$Size = Cats$Breed
+Cats$Size = as.character(Cats$Breed)
+Cats$Size = sapply(Cats$Size, 
+                   function(x) gsub(' Mix', ' ',
+                                    strsplit(x, split = ' Mix')[[1]][1]))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'British Shorthair' | Cats$Size == 'Ocicat' | Cats$Size == 'Chartreux' | Cats$Size == 'Norwegian Forest Cat', 'Large', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Turkish Van' | Cats$Size == 'Pixiebob Shorthair' | Cats$Size == 'Himalayan' | Cats$Size == 'American Wirehair', 'Large', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'American Shorthair', 'Large', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Persian' | Cats$Size == 'Abyssinian' | Cats$Size == 'Sphynx' | Cats$Size == 'Siamese', 'Medium', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Exotic Shorthair' | Cats$Size == 'Scottish Fold' | Cats$Size == 'Cornish Rex' | Cats$Size == 'Devon Rex', 'Medium', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Burmese' | Cats$Size == 'Tonkinese' | Cats$Size == 'Russian Blue' | Cats$Size == 'Manx', 'Medium', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Japanese Bobtail' | Cats$Size == 'Turkish Angora' | Cats$Size == 'Balinese' | Cats$Size == 'Bombay', 'Medium', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Havana Brown' | Cats$Size == 'Bengal' | Cats$Size == 'Cymric' | Cats$Size == 'Snowshoe', 'Medium', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Maine Coon' | Cats$Size == 'Ragdoll', 'XL', Cats$Size))
+Cats = mutate(Cats, Size = ifelse(Cats$Size == 'Large' | Cats$Size == 'XL', Cats$Size, 'Medium'))
+table(Cats$Size)
+full = bind_rows(Cats, Dogs)
+#head(full, n=5)
+```
+#Creation of Features: (Animal Hair Length)
+```{r Hair, echo=FALSE}
+Cats$Hair = ifelse(grepl('Shorthair', Cats$Breed), 'Short', Cats$Breed)
+Cats$Hair = ifelse(grepl('Medium Hair', Cats$Breed), 'Medium', Cats$Hair)
+Cats$Hair = ifelse(grepl('Longhair', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Persian', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Maine Coon', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Norwegian', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Balinese', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Sphynx', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Ragdoll', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Siamese', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Abyssinian', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Burmese', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Tonkinese', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Havana', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Snowshoe', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Russian Blue', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Manx', Cats$Breed), 'Medium', Cats$Hair)
+Cats$Hair = ifelse(grepl('Bengal', Cats$Breed), 'Medium', Cats$Hair)
+Cats$Hair = ifelse(grepl('Turkish Van', Cats$Breed), 'Medium', Cats$Hair)
+Cats$Hair = ifelse(grepl('Angora', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Himalayan', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Bobtail', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Wirehair', Cats$Breed), 'Medium', Cats$Hair)
+Cats$Hair = ifelse(grepl('Bombay', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Chartreux', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Cornish', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Cymric', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Devon', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Javanese', Cats$Breed), 'Long', Cats$Hair)
+Cats$Hair = ifelse(grepl('Ocicat', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Oriental', Cats$Breed), 'Short', Cats$Hair)
+Cats$Hair = ifelse(grepl('Scottish', Cats$Breed), 'Short', Cats$Hair)
+Dogs$Breed = as.character(Dogs$Breed)
+Dogs$Breed = sapply(Dogs$Breed,function(x) gsub(' Mix', '',strsplit(x, split = '/')[[1]][1]))
+Dogs$Hair = ifelse(grepl('Affenpinscher', Dogs$Breed), 'Short', Dogs$Breed)
+Dogs$Hair = ifelse(grepl('Beagle', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('American Foxhound', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Basenji', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Basset Hound', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Beauceron', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Australian Cattle Dog', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bulldog', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Boxer', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bearded Collie', Dogs$Breed), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Chihuahua', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dachshund Longhair', Dogs$Breed), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dachshund', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bloodhound', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dalmatian', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Beagle', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Labrador', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('German Shepherd', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Great Dane', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Shorthair', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Retriever', Dogs$Breed), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Greyhound', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dutch Shepherd', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Wire Hair Fox Terrier', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pit Bull', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bearded Collie', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Yorkshire Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bearded Collie', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Afghan Hound', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Havanese', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bernese Mountain Dog', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Lhasa Apso', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Shih Tzu', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Maltese', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pomeranian', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Rottweiler', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Husky', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Poodle', Dogs$Breed), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Airedale Terrier', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bearded Collie', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Border Collie', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Australian Shepherd', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Spaniel', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Schnauzer', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Golden Retriever', Dogs$Breed), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Coonhound', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Husky', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('St. Bernard', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('West Highland', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Welsh Terrier', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Belgian Sheepdog', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Shetland Sheepdog', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pug', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Sheepdog', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Collie', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Skye Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Wirehaired Pointing Griffon', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Tibetan Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Silky Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Chow Chow', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bull Terrier', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Fox Terrier', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Whippet', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Weimaraner', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Vizsla', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Hound', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Tennesse Brindle', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Scottish Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Treeing Cur', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Swedish Vallhund', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Staffordshire', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Spinone Italiano', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Spanish Mastiff', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Wheaten Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Shiba Inu', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Sealyham Terr', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Schipperke', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Samoyed', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Saluki', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Ridgeback', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Rat Terrier', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Queensland Heeler', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Presa', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Port Water Dog', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pointer', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Podengo', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Corgi', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pekingese', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pbgv', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Patterdale', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Russell Terrier', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Papillon', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Otterhound', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Norwich Terrier', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Norwegian Elkhound', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Norfolk Terrier', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Newfoundland', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Mastiff', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Mexican Hairless', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Manchester Terrier', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Lowchen', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pinscher', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Leonberger', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Landseer', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Kuvasz', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Keeshond', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Jindo', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Japanese Chin', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('hound', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Setter', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Irish Terrier', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Hovawart', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Harrier', Dogs$Breed), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Swiss Mountain Dog', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Pyrenees', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Glen Of Imaal', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Finnish', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Feist', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Entlebucher', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('English Shepherd', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dogue', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dogo', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Doberman', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Dandie', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Coton', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Chinese', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Chesa', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Cavalier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Catahoula', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Carolina', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Cane', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Canaan', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Cairn', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bullmastiff', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bruss', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Brittany', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Boykin', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Boston', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Border', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Australian Terrier', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Blue Lacy', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Black Mouth', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bichon', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Belgian Malinois', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Tervuren', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Bedlington', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Kelpie', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Anatol', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Eskimo', Dogs$Hair), 'Long', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Alaskan', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Akita', Dogs$Hair), 'Medium', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Boerboel', Dogs$Hair), 'Short', Dogs$Hair)
+Dogs$Hair = ifelse(grepl('Black', Dogs$Hair), 'Long', Dogs$Hair)
+full = bind_rows(Cats, Dogs)
+summary(full$Hair)
+#head(full, n=5)
+```
+
+#Creation of Features: (Near Death)
+```{r death}
+full$AgeinDays = as.numeric(as.character(full$AgeinDays))
+full$AVERAGE.LIFESPAN..YEARS. = as.numeric(full$AVERAGE.LIFESPAN..YEARS.)
+full$AboutToDie = (full$AgeinDays/365)
+full$AboutToDie = as.integer(full$AboutToDie)
+full$AboutToDie = full$AVERAGE.LIFESPAN..YEARS. - full$AboutToDie
+full$AboutToDie = ifelse(full$AboutToDie <= 3, 1, 0)
+```
+
+#Part 2: Preparing Data for Model Building 
+Create training and test sets. Training is 70% of the data. Test is 30% of the data. This is in accordance with Kaggles Guidelines
+```{r prepare}
+#Make Variables into Factors 
+full$AVERAGE.LIFESPAN..YEARS. = as.factor(full$AVERAGE.LIFESPAN..YEARS.)
+full$Multicolor = as.factor(full$Multicolor)
+full$AboutToDie = as.factor(full$AboutToDie)
+full$AgeinDays = as.factor(full$AgeinDays)
+full$Hypo = as.factor(full$Hypo)
+full$Month = as.factor(full$Month)
+full$Hour = as.factor(full$Hour)
+full$Hair = as.factor(full$Hair)
+full$Size = as.factor(full$Size)
+full$Color = as.factor(full$Color)
+#Create training and test sets.  
+Sample = sample(c(TRUE, FALSE), nrow(full), replace = T, prob = c(0.7, 0.3))
+Train.animals = full[Sample,]
+Test.animals = full[!Sample,]
+#head(full, n=10)
+#str(full)
+```
+#Part 3: Unsupervised Learning
+```{r Unsupervised}
+#Convert categorical variables into numeric variables. 
+library(dummies)
+full$TimeOfDay.factor <-factor(full$TimeOfDay)
+full$TimeOfDay.factor <-as.numeric(full$TimeOfDay.factor)
+full$Hair.factor <-factor(full$Hair)
+full$Hair.factor <-as.numeric(full$Hair.factor)
+full$Size.factor <- factor(full$Size)
+full$Size.factor <-as.numeric(full$Size.factor)
+full$Mix.factor <-factor(full$Mix)
+full$Mix.factor <- as.numeric(full$Mix.factor)
+full$Fixed.factor <-factor(full$Fixed)
+full$Fixed.factor <- as.numeric(full$Fixed.factor)
+full$Sex.factor <-factor(full$Sex)
+full$Sex.factor <- as.numeric(full$Sex.factor)
+full$AVERAGE.LIFESPAN..YEARS.factor <-factor(full$AVERAGE.LIFESPAN..YEARS.)
+full$AVERAGE.LIFESPAN..YEARS.factor <-as.numeric(full$AVERAGE.LIFESPAN..YEARS.factor)
+full$AboutToDie.factor <-factor(full$AboutToDie)
+full$AboutToDie.factor <-as.numeric(full$AboutToDie.factor)
+full$Hypo.factor <-factor(full$Hypo)
+full$Hypo.factor <-as.numeric(full$Hypo.factor)
+full$AnimalType.factor <-factor(full$AnimalType)
+full$AnimalType.factor <- as.numeric(full$AnimalType.factor)
+full$HasAName.factor <-factor(full$HasAName)
+full$HasAName.factor <-as.numeric(full$HasAName.factor)
+full$Multicolor.factor <- factor(full$Multicolor)
+full$Multicolor.factor <- as.numeric(full$Multicolor.factor)
+
+numeric=full[,c(36,37,38,39,40,41,42,43,44)]
+
+# Supply names of columns that have 0 variance
+names(numeric[, sapply(numeric, function(v) var(v, na.rm=TRUE)==0)])
+
+#summary(is.na(numeric))
+
+#str(numeric)
+#Try Principal Components Analysis
+prin_comp <-prcomp(numeric, scale. = T)
+
+prin_comp$center #These are the means for each column
+prin_comp$scale #These are the SD for each column
+prin_comp$rotation
+dim(prin_comp$x)
+
+prin_comp$rotation = -prin_comp$rotation
+prin_comp$x = -prin_comp$x
+#biplot(prin_comp, scale=0)
+
+prin_comp$sdev
+prin_var = prin_comp$sdev^2
+prin_var
+
+pve = prin_var/sum(prin_var)
+pve
+
+#Plot the proportion of variance explained by each principal component. 
+
+plot(pve, xlab="Principal Component", ylab = "Proportion of Variance Explained", ylim=c(0,1), type='b')
+
+plot(cumsum(pve), xlab="Principal Component", ylab="Cumulative Proportion of Variance Explained", ylim=c(0,1), type='b')
+
+#Try Clustering 
+
+set.seed(2)
+km.out=kmeans(numeric, 4, nstart = 50)
+#km.out
+#K means clustering with 4 clusters of sized 9755, 7007, 3972, 5995
+km.out$tot.withinss
+#plot(numeric, col=km.out$cluster, main = "k-means with 4 clusters")
+km.data = data.frame(km.out$cluster, full$OutcomeType)
+table(km.data)
+# Hierarchial Clustering (Not Enough Computing Power)
+#hc.complete = hclust(dist(km.data), method='complete')
+#hc.clusters = cutree(hc.complete, 4)
+#hc.data = data.frame(full$OutcomeType, hc.clusters)
+#table(hc.data)
+#hc.avg = hclust(dist(km.data), method='average')
+#hc.clusters.avg = cutree(hc.avg, 4)
+#hc.data.avg = data.frame(full$OutcomeType, hc.clusters.avg)
+#table(hc.data.avg)
+#hc.centroid = hclust(dist(km.data), method='centroid')
+#hclust.centroid = cutree(hc.centroid, 4)
+#hc.data.centroid = data.frame(full$OutcomeType, hclust.centroid)
+#table(hc.data.centroid)
+```
+
