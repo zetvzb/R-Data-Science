@@ -1,0 +1,67 @@
+clean_corpus <-function(corpus){
+  
+  #Convert to Plain Text Document
+  corpus<- tm_map(corpus, PlainTextDocument)
+  #Make a correct to encoding. Want ASCII endoded tweets. 
+  corpus <- tm_map(corpus, textclean::replace_non_ascii)
+  #Replace "5 star" with "best" and replace 10 our od 10 with "best" etc...
+  corpus <-tm_map(corpus, textclean::replace_rating)
+  #Replace Ordinals
+  corpus <- tm_map(corpus, textclean::replace_ordinal)
+  #Replace Money 
+  corpus <- tm_map(corpus, textclean::replace_money)#Turns digit money into word. 
+  #Replace Symbols 
+  corpus <- tm_map(corpus, textclean::replace_symbol)
+  #Replace HTML Tags
+  corpus <- tm_map(corpus, textclean::replace_html)
+  #Strip White Space 
+  corpus <- tm_map(corpus, stripWhitespace)
+  #Kernel
+  corpus <- tm_map(corpus, textclean::replace_kern)#Fixes spacing such as when someone says H E L L O it makes it HELLO
+  #Convert to Plain Text Document
+  corpus<- tm_map(corpus, PlainTextDocument)
+  #Make Lower Case
+  corpus <- tm_map(corpus, content_transformer(tolower)) 
+  #Convert to Plain Text Document
+  corpus<- tm_map(corpus, PlainTextDocument)
+  #Since Twitter allows profanity, we should remove it. Uses Luis van Ahns Profanity List
+  # Link: http://www.cs.cmu.edu/~biglou/resources/
+  corpus <-tm_map(corpus, removeWords, Profanity)
+  #Remove Email
+  emlPat<-function(x) gsub("\\b[A-Z a-z 0-9._ - ]*[@](.*?)[.]{1,3} \\b", "", x)
+  corpus<- tm_map(corpus, emlPat)
+  #Remove Twitter Tags
+  tt<-function(x) gsub("RT |via", "", x)
+  corpus<- tm_map(corpus, tt)
+  #Remove Twitter Usernames
+  tun<-function(x) gsub("[@][a - zA - Z0 - 9_]{1,15}", "", x)
+  corpus<- tm_map(corpus,tun)
+  #Remove Numbers
+  corpus <- tm_map(corpus, qdap::replace_number)
+  #Replace Emojis
+  corpus <-tm_map(corpus, textclean::replace_emoji)
+  #Strip remaining punctuation 
+  corpus <- tm_map(corpus,removePunctuation)
+  #Replace Contractions
+  corpus <- tm_map(corpus,qdap::replace_contraction)
+  #Replace Word elongation
+  corpus <- tm_map(corpus, textclean::replace_word_elongation)
+  #Replace Internet Slang 
+  corpus <- tm_map(corpus, textclean::replace_internet_slang)
+  #Replace Symbols with Words
+  corpus <- tm_map(corpus,qdap::replace_symbol)
+  #Remove Custom Words 
+  words =  c("stopword1", "stopword2", "stopword3", "etc")
+  corpus <-tm_map(corpus,removeWords, words)
+  #Replace emoticons with text 
+  corpus <- tm_map(corpus, textclean::replace_emoticon)
+  #Remove Stop Words from Stop Word Library
+  corpus <-tm_map(corpus,removeWords, stopwords("english"))
+  #Stemming to remove complexity 
+  corpus <- tm_map(corpus, stemDocument, language = "english")
+ 
+  #Convert to Plain Text Document
+  corpus<- tm_map(corpus, PlainTextDocument)
+  
+  return(corpus)
+}
