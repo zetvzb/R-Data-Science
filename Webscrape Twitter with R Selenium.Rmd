@@ -1,0 +1,181 @@
+---
+title: "Webscrape Twitter with R Selenium"
+author: "Zach Tallevast"
+date: "December 2, 2018"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+This document explains how to navigate TWitter and how to Scroll through tweets on a website with built in Infinite Scrolling. Using typical webscraping techniques with the rvest package, a user cannot obtain information stored after the bottom of the page. With this code, one can scroll through twitter using a provided URL to obtain information about tweets. 
+
+```{r cars}
+library(dplyr)
+library(sqldf)
+library(rvest) #By Hadley Wickham
+library(devtools)
+library(xml2)
+library(tidyverse)
+```
+Install Gadget Selector for Google Chrome as an Extension. This is to view CSS code with the click of a mouse. 
+
+## RSelenium
+
+Setting up R Selenium. This is a webdriver and will allow you to scroll. Set up Docker on your machine and designate the browser youre using.
+Install Docker Quickstart Terminal on your machine. Use your web broswer to assist the setup of this docker container. 
+http://www.et.bs.ehu.es/cran/web/packages/RSelenium/vignettes/RSelenium-docker.html
+
+```{r Selenium, echo=FALSE}
+install_version("binman", version = "0.1.0", repos = "https://cran.uni-muenster.de/")
+install_version("wdman", version = "0.2.2", repos = "https://cran.uni-muenster.de/")
+install_version("RSelenium", version = "1.7.1", repos = "https://cran.uni-muenster.de/")
+library(RSelenium)
+```
+
+Set a Working Directory 
+
+```{r wd}
+setwd("C:\\Users\\Zach Tallevast\\Desktop\\")
+```
+
+## Establishing Connection with Docker Container via R Selenium 
+
+```{r connect}
+
+remDr <- remoteDriver(remoteServerAddr = "192.168.99.100", port = 4445L, browser = "chrome")
+remDr$open()
+```
+
+Feed RSelenium an URL to scroll. 
+
+Lets find out what Twitter Users said about Santa Claus on the night of Christmas Eve in 2017 for users located within 100 miles of Los Angeles, CA"
+
+Setup a Twitter Search in your browser
+Set language = English 
+Set location = Los Angeles
+Set distance from = 100 miles
+Set Dates 2017-12-24 - 2017-12-26
+Set Exclusion of Retweets 
+Set Exclusion of Links
+Set minimum favorites to 1
+
+
+```{r url}
+remDr$navigate("https://twitter.com/search?f=tweets&q=Santa%20Claus%20near%3A%22Los%20Angeles%22%20lang%3Aen%20within%3A100mi%20since%3A2017-12-24%20until%3A2017-12-26%20exclude%3Aretweets&src=typd") #Search for Santa Claus
+
+remDr$screenshot(display = TRUE)#Displays a screenshot of where the Scrolling is located in the URL
+
+```
+
+
+In order to make use of all of Twitters Features, you will need to login to an active Twitter Account. I recommend using an account that you do not use daily. 
+
+```{r login}
+mailid <- remDr$findElement(using = 'css', "[class = 'text-input email-input js-signin-email']")
+mailid$sendKeysToElement(list(TWITTER_USERNAME)) #Notice you will need to enter your TWITTER USERNAME HERE
+password <- remDr$findElement(using = 'css', ".LoginForm-password .text-input")
+password$sendKeysToElement(list(TWITTER_PASSWORD)) #Notice you will need to enter your TWITTER PASSWORD HERE
+login <- remDr$findElement(using = 'css', ".js-submit")
+login$clickElement()
+
+```
+
+Assure the connection to the feed is secured and identifiable. The webpage will show in the Viewer window. 
+
+```{r secure_connection}
+remDr$screenshot(display = TRUE)
+remDr$getStatus() 
+```
+
+Time to let the tool work! The function is setup to scroll 500 times and to wait to load the page 2 seconds between each scroll. The 10000 represents the interval in webspace the tool scrolls. 
+
+```{r activate_scroll}
+#Scroll 500 Times, Wait for page to load 2 seconds per scroll. This is to suspend execution for 2 seconds while scrolling. 
+for(i in 1:500){      
+  remDr$executeScript(paste("scroll(0,",i*10000,");"), args=list("dummy"))
+  Sys.sleep(2)  #Helps with Load Limit on Twitter  
+}
+
+page_source <-remDr$getPageSource()
+```
+
+Begin to Webscrape using Standard RVest Functions. You can locate Username, Twitter Handle, Text, TimeStamp, # Of Favorites, # Of Retweets, # Of Replies
+
+
+```{r Begin_Scrape}
+#Grab Data
+#First Grab Each Tweets Username
+User <- xml2::read_html(remDr$getPageSource()[[1]]) %>% 
+  rvest::html_nodes('.show-popup-with-id') %>% 
+  #rvest::html_children() %>% #Unneccessary
+  rvest::html_text() %>% 
+  #.[1:100] %>% ##Apply this if you are wanting x number of tweets from the scroll. Say the first 100
+  dplyr::data_frame(User = .)
+
+#Grab Each TWeets Twitter Handle
+Handle <- xml2::read_html(remDr$getPageSource()[[1]]) %>% 
+  rvest::html_nodes('.js-nav .u-textTruncate b') %>% 
+  #rvest::html_children() %>% 
+  rvest::html_text() %>% 
+  dplyr::data_frame(Handle = .)
+
+#Grab the independent text for each Tweet
+Tweet_Text <- xml2::read_html(remDr$getPageSource()[[1]]) %>% 
+  rvest::html_nodes('.tweet-text') %>% 
+  rvest::html_text() %>% 
+  dplyr::data_frame(Tweet_Text = .)
+
+#Grab the TimeStamp
+Timestamp <- xml2::read_html(remDr$getPageSource()[[1]]) %>%
+  rvest::html_nodes('.js-short-timestamp') %>% 
+  rvest::html_text() %>% 
+  dplyr::data_frame(Timestamp = .) 
+
+#Grab the Number of Favorites 
+Favorites <- xml2::read_html(remDr$getPageSource()[[1]]) %>%
+  rvest::html_nodes('.js-actionFavorite .ProfileTweet-actionCountForPresentation') %>% 
+  rvest::html_text() %>%
+  dplyr::data_frame(Favorites = .) 
+
+#Grab the Number of Retweets 
+Retweets <- xml2::read_html(remDr$getPageSource()[[1]]) %>% 
+  rvest::html_nodes('.js-actionRetweet .ProfileTweet-actionCountForPresentation') %>% 
+  rvest::html_text() %>% 
+  dplyr::data_frame(Retweets = .) 
+
+#Grab the Number of Replies
+Replies <- xml2::read_html(remDr$getPageSource()[[1]]) %>%
+  rvest::html_nodes('.js-actionReply .ProfileTweet-actionCountForPresentation') %>% 
+  rvest::html_text() %>% 
+  dplyr::data_frame(Replies = .) 
+
+```
+
+I would like to point out there is metadata that can be gathered using other methods. In the HTML there exists locational data using Longitudinal and Latitudinal Coordinates, but due to the nature of RVest, the metadata for Twitter is difficult to methodize. Also, Twitter does not publish every tweet using a standard template. It is worth the time to exclude quoted tweets as it makes the webscrape tool above messy and difficult to use. You will also need to emilnate the first observation as the tool grabs the Twitter Handle of the Webscrapers account first. 
+
+```{r adjust}
+#Note CSS webscraping is not always perfect. ONLY SOMETIMES will you have to make adjustments to your feed. 
+#Clean Results 
+Handle = Handle[-1,] #the CSS grabs your personal handle as the first handle observation. 
+Tweet_Text = Tweet_Text[1:nrow(Handle),]
+```
+
+Now combine all Variables into one Dataframe. 
+
+```{r dataframe}
+#Combine all variables
+tmp <- data.frame(User,Handle,Tweet_Text,Replies,Timestamp)
+```
+```{r close_feed}
+remDr$close()
+```
+
+
+
+
