@@ -1,3 +1,7 @@
+#################################################################################################
+#-------------------------------- Corpus Text Cleaner-------------------------------------------#
+#This is a Text Cleaner using tm package. Users should reference a corpus to use this function. #
+#################################################################################################
 clean_corpus <-function(corpus){
   
   #Convert to Plain Text Document
